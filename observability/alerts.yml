@@ -1,0 +1,36 @@
+groups:
+  - name: tournament
+    rules:
+      - alert: TournamentDeadLetters
+        expr: sum(rabbitmq_detailed_queue_messages{job="rabbitmq-queue",queue="tournament.bets.dlq"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Bet events are waiting in the dead-letter queue
+          description: >-
+            {{ $value }} event(s) in tournament.bets.dlq are not counted in the leaderboard.
+            Check the consumer logs for the reason, fix the cause, then run
+            `pnpm dlq:redrive --apply` (or `node dist/redrive-dlq.js --apply` in the container).
+
+      - alert: TournamentConsumerPaused
+        expr: max(tournament_consumer_paused) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Event consumption is paused because PostgreSQL is unavailable
+          description: >-
+            The consumer stopped taking bet events and probes PostgreSQL with backoff.
+            Events wait in tournament.bets and are processed once the database answers.
+
+      - alert: TournamentNoConsumers
+        expr: (sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-queue",queue="tournament.bets"}) or vector(0)) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: No consumer is attached to tournament.bets
+          description: >-
+            Bet events accumulate without processing. A paused consumer also detaches,
+            so check TournamentConsumerPaused first.

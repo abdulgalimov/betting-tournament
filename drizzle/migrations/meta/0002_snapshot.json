@@ -1,0 +1,209 @@
+{
+  "id": "f7cfea55-94d7-48da-8529-36cdd43f5551",
+  "prevId": "71f4ea1c-b35c-4c66-b859-7c5d2a3ae8df",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.bets": {
+      "name": "bets",
+      "schema": "",
+      "columns": {
+        "bet_id": {
+          "name": "bet_id",
+          "type": "varchar(128)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "player_id": {
+          "name": "player_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settlement": {
+          "name": "settlement",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp(6) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "contribution": {
+          "name": "contribution",
+          "type": "numeric(60, 12)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "exchange_rate": {
+          "name": "exchange_rate",
+          "type": "numeric(24, 6)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bets_active_player_settled_at_idx": {
+          "name": "bets_active_player_settled_at_idx",
+          "columns": [
+            {
+              "expression": "player_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "settled_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "where": "\"bets\".\"state\" = 'settled' AND \"bets\".\"contribution\" > 0",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "bets_state_valid": {
+          "name": "bets_state_valid",
+          "value": "\"bets\".\"state\" IN ('settled', 'rolled_back')"
+        },
+        "bets_contribution_nonnegative": {
+          "name": "bets_contribution_nonnegative",
+          "value": "\"bets\".\"contribution\" >= 0"
+        },
+        "bets_rolled_back_zero": {
+          "name": "bets_rolled_back_zero",
+          "value": "\"bets\".\"state\" <> 'rolled_back' OR \"bets\".\"contribution\" = 0"
+        },
+        "bets_settlement_required": {
+          "name": "bets_settlement_required",
+          "value": "\"bets\".\"state\" <> 'settled' OR (\"bets\".\"settlement\" IS NOT NULL AND \"bets\".\"exchange_rate\" IS NOT NULL AND \"bets\".\"exchange_rate\" > 0)"
+        },
+        "bets_settled_at_required": {
+          "name": "bets_settled_at_required",
+          "value": "\"bets\".\"state\" <> 'settled' OR \"bets\".\"settled_at\" IS NOT NULL"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.player_scores": {
+      "name": "player_scores",
+      "schema": "",
+      "columns": {
+        "player_id": {
+          "name": "player_id",
+          "type": "varchar(128)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "points": {
+          "name": "points",
+          "type": "numeric(60, 12)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "score_reached_at": {
+          "name": "score_reached_at",
+          "type": "timestamp(6) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "player_scores_leaderboard_idx": {
+          "name": "player_scores_leaderboard_idx",
+          "columns": [
+            {
+              "expression": "points",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "score_reached_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "\"player_id\" COLLATE \"C\" ASC",
+              "isExpression": true,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "player_scores_points_nonnegative": {
+          "name": "player_scores_points_nonnegative",
+          "value": "\"player_scores\".\"points\" >= 0"
+        },
+        "player_scores_achievement_time_valid": {
+          "name": "player_scores_achievement_time_valid",
+          "value": "(\"player_scores\".\"points\" = 0 AND \"player_scores\".\"score_reached_at\" IS NULL) OR (\"player_scores\".\"points\" > 0 AND \"player_scores\".\"score_reached_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "views": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 3s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [prometheus:9090]
+
+  - job_name: tournament
+    static_configs:
+      - targets: [tournament:9464]
+
+  - job_name: tournament-host
+    static_configs:
+      - targets: [host.docker.internal:9464]
+
+  - job_name: rabbitmq-queue
+    metrics_path: /metrics/detailed
+    params:
+      family:
+        [queue_coarse_metrics, queue_consumer_count, queue_delivery_metrics]
+      queue: ['^tournament\.bets(\.dlq)?$']
+    static_configs:
+      - targets: [rabbitmq:15692]

@@ -1,0 +1,198 @@
+name: betting-tournament-api
+
+x-app: &app
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  stop_grace_period: 30s
+
+services:
+  postgres:
+    image: postgres:18.7-bookworm
+    command:
+      - postgres
+      - -c
+      - max_connections=160
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - wal_compression=lz4
+      - -c
+      - max_wal_size=4GB
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tournament}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tournament}
+      POSTGRES_DB: ${POSTGRES_DB:-tournament}
+    ports: ['127.0.0.1:5432:5432']
+    volumes: [postgres-data:/var/lib/postgresql]
+    healthcheck:
+      test:
+        [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.4.1-management
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-tournament}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-tournament}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-tournament.bets.dlq}
+    ports: ['127.0.0.1:5672:5672', '127.0.0.1:15672:15672']
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./observability/rabbitmq-enabled-plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./scripts/configure-dlq.sh:/etc/rabbitmq/configure-dlq.sh:ro
+    post_start:
+      - command: [/bin/sh, /etc/rabbitmq/configure-dlq.sh]
+        user: rabbitmq
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          'test -f /tmp/tournament-dlq-policy-ready && rabbitmq-diagnostics -q check_running',
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    restart: 'no'
+    image: betting-tournament:local
+    build:
+      context: .
+    command: [node, dist/migrate.js]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tournament}:${POSTGRES_PASSWORD:-tournament}@postgres:5432/${POSTGRES_DB:-tournament}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  tournament:
+    <<: *app
+    image: betting-tournament:local
+    build:
+      context: .
+    environment:
+      PORT: '3000'
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tournament}:${POSTGRES_PASSWORD:-tournament}@postgres:5432/${POSTGRES_DB:-tournament}
+      DATABASE_MAX_POOL: ${DATABASE_MAX_POOL:-8}
+      DATABASE_HTTP_MAX_POOL: ${DATABASE_HTTP_MAX_POOL:-8}
+      DATABASE_HTTP_STATEMENT_TIMEOUT_MS: ${DATABASE_HTTP_STATEMENT_TIMEOUT_MS:-2000}
+      DATABASE_HTTP_CONNECTION_TIMEOUT_MS: ${DATABASE_HTTP_CONNECTION_TIMEOUT_MS:-1000}
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-tournament}:${RABBITMQ_DEFAULT_PASS:-tournament}@rabbitmq:5672
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-bets}
+      RABBITMQ_QUEUE: ${RABBITMQ_QUEUE:-tournament.bets}
+      RABBITMQ_DEAD_LETTER_EXCHANGE: ${RABBITMQ_DEAD_LETTER_EXCHANGE:-bets.dlx}
+      RABBITMQ_DEAD_LETTER_QUEUE: ${RABBITMQ_DEAD_LETTER_QUEUE:-tournament.bets.dlq}
+      RABBITMQ_DEAD_LETTER_ROUTING_KEY: ${RABBITMQ_DEAD_LETTER_ROUTING_KEY:-failed}
+      RABBITMQ_PREFETCH: ${RABBITMQ_PREFETCH:-1000}
+      RABBITMQ_MAX_DELIVERY_ATTEMPTS: ${RABBITMQ_MAX_DELIVERY_ATTEMPTS:-5}
+      EVENT_BATCH_SIZE: ${EVENT_BATCH_SIZE:-250}
+      EVENT_BATCH_CONCURRENCY: ${EVENT_BATCH_CONCURRENCY:-2}
+      EXCHANGE_RATES: '${EXCHANGE_RATES:-USD=1;EUR=1.1;RUB=0.01}'
+      LOG_LEVEL: ${LOG_LEVEL:-error}
+      LOKI_URL: ${LOKI_URL:-}
+      NODE_OPTIONS: --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import=@opentelemetry/auto-instrumentations-node/register
+      OTEL_SERVICE_NAME: tournament
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: prometheus
+      OTEL_LOGS_EXPORTER: none
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://alloy:4318
+      OTEL_EXPORTER_PROMETHEUS_HOST: 0.0.0.0
+      OTEL_EXPORTER_PROMETHEUS_PORT: '9464'
+    ports: ['127.0.0.1:3000:3000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports: ['127.0.0.1:9090:9090']
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - tournament
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.8
+    command: [-config.file=/etc/loki/config.yml]
+    ports: ['127.0.0.1:3100:3100']
+    volumes:
+      - ./observability/loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    command: [-config.file=/etc/tempo/config.yml]
+    ports: ['127.0.0.1:3200:3200']
+    volumes:
+      - ./observability/tempo.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.21.3
+    command: [run, --storage.path=/var/lib/alloy/data, /etc/alloy/config.alloy]
+    ports: ['127.0.0.1:4317:4317', '127.0.0.1:4318:4318']
+    volumes:
+      - ./observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+      - tempo
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    ports: ['127.0.0.1:3001:3000']
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  alloy-data:
+  grafana-data:

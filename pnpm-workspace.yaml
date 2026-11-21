@@ -1,0 +1,13 @@
+# pnpm configuration for this standalone application; no workspace packages.
+allowBuilds:
+  esbuild: true
+  '@scarf/scarf': false
+  protobufjs: false
+verifyDepsBeforeRun: false
+saveExact: true
+strictPeerDependencies: true
+autoInstallPeers: false
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.1.1'
+  - '@vitest/spy@5.1.1'
+  - vitest@5.1.1
